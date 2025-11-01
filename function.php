@@ -76,9 +76,10 @@ function mbn_oxygen_enhancer_end_output_buffering($buffer) {
   $buffer = mbn_oxygen_enhancer_scripts_optimize( $buffer);
   $buffer = mbn_oxygen_videos_optimize( $buffer);
   $buffer = mbn_oxygen_images_optimize( $buffer);
-  $buffer = mbn_oxygen_preload_font( $buffer);
   $buffer = mbn_oxygen_preconnect_optimize( $buffer);
   $buffer = mbn_oxygen_jquery_defer_fix( $buffer);
+  $buffer = mbn_oxygen_local_font( $buffer );
+  $buffer = mbn_oxygen_preload_font( $buffer);
   $buffer = mbn_oxygen_cleanup( $buffer );
 
   return $buffer;
@@ -598,57 +599,85 @@ function mbn_oxygen_images_optimize( $buffer) {
 }
 
 
+function mbn_oxygen_local_font( $buffer ) {
+  // Find all <style> tags (inline CSS blocks)
+  $buffer = preg_replace_callback(
+    '#(<style[^>]*>)(.*?)(</style>)#is',
+    function($matches) {
+      $start = $matches[1];
+      $css = $matches[2];
+      $end = $matches[3];
 
-function mbn_oxygen_preload_font($buffer) {
-    // Only preload font URLs if they are from Typekit (use.typekit.net)
-    $preload_fonts = array(); // [font-family or null] => font-url
+      // For each @font-face block with use.typekit.net src, attempt to download font and rewrite src
+      $css = preg_replace_callback(
+        '/@font-face\s*\{.*?\}/is',
+        function($fontface_block_matches) use (&$upload_dir_info) {
+          $block = $fontface_block_matches[0];
+          // Find src: urls that point to use.typekit.net
+          if (preg_match_all('/url\([\'"]?(https:\/\/use\.typekit\.net\/[^\'"\)]+)[\'"]?\)\s*format\([\'"]?([a-z0-9]+)[\'"]?\)/i', $block, $url_matches, PREG_SET_ORDER)) {
+            $local_sources = [];
+            $srcs_found = false;
+            $upload_dir_info = wp_upload_dir();
+            $upload_base_dir = trailingslashit($upload_dir_info['basedir']) . 'mbn-enhancer/fonts/';
+            $upload_base_url = trailingslashit($upload_dir_info['baseurl']) . 'mbn-enhancer/fonts/';
 
-    // Find all @font-face blocks
-    if (preg_match_all('/@font-face\s*\{.*?\}/is', $buffer, $font_face_blocks)) {
-        foreach ($font_face_blocks[0] as $block) {
-            // Extract font-family (if any)
-            $font_family = null;
-            if (preg_match('/font-family\s*:\s*["\']?([^;"\'}]+)["\']?\s*;/i', $block, $family_match)) {
-                $font_family = trim($family_match[1]);
+            if (!file_exists($upload_base_dir)) {
+              wp_mkdir_p($upload_base_dir);
             }
-            // Extract all url(...) from src (do not filter on extension, but skip data: urls)
-            if (preg_match_all('/url\(\s*[\'"]?([^\'")]+)[\'"]?\s*\)/i', $block, $url_matches)) {
-                foreach ($url_matches[1] as $font_url) {
-                    if (stripos($font_url, 'data:') === 0) continue;
-                    // Only include if it's a Typekit URL
-                    if (preg_match('~^https?://use\.typekit\.net/~', $font_url)) {
-                        // Only add first font URL if we found family, otherwise add all unique
-                        if ($font_family) {
-                            if (!isset($preload_fonts[$font_family])) {
-                                $preload_fonts[$font_family] = $font_url;
-                                break; // only first for the family
-                            }
-                        } else {
-                            // fallback for unknown family: just use URL itself (preload unique URLs)
-                            $preload_fonts[$font_url] = $font_url;
-                        }
-                    }
+
+            foreach ($url_matches as $m) {
+              $srcs_found = true;
+              $remote_url = $m[1];
+              $format = $m[2];
+
+              // Generate local file name, keep extension if possible, fallback to .bin
+              $ext = pathinfo(parse_url($remote_url, PHP_URL_PATH), PATHINFO_EXTENSION);
+              if (!$ext) {
+                $ext = ($format === 'woff2' || $format === 'woff' || $format === 'otf' || $format === 'ttf') ? $format : 'bin';
+              }
+              $basename = 'typekit-' . md5($remote_url) . "." . $ext;
+              $local_file_path = $upload_base_dir . $basename;
+              $local_file_url = $upload_base_url . $basename;
+
+              // Download if not exists
+              if (!file_exists($local_file_path)) {
+                $font_content = @file_get_contents($remote_url);
+                if ($font_content !== false) {
+                  @file_put_contents($local_file_path, $font_content);
                 }
-            }
-        }
-    }
+              }
 
-    if (!empty($preload_fonts) && preg_match('/<head[^>]*>/i', $buffer, $head_tag, PREG_OFFSET_CAPTURE)) {
-        $inserts = '';
-        foreach ($preload_fonts as $font_url) {
-            // Type guessing: get extension for type (basic)
-            $type = '';
-            if (preg_match('/\.(woff2?)($|\?)/i', $font_url, $type_match)) {
-                $type = strtolower($type_match[1]);
-            }
-            $type_attr = $type ? ' type="font/' . esc_attr($type) . '"' : '';
-            $inserts .= '<link rel="preload" as="font" href="' . esc_attr($font_url) . '"' . $type_attr . ' crossorigin />' . "\n";
-        }
-        $head_pos = $head_tag[0][1] + strlen($head_tag[0][0]);
-        $buffer = substr_replace($buffer, $inserts, $head_pos, 0);
-    }
+              // If downloaded, replace url to local; else, fallback to remote
+              if (file_exists($local_file_path) && filesize($local_file_path) > 0) {
+                $final_url = $local_file_url;
+              } else {
+                $final_url = $remote_url;
+              }
 
-    return $buffer;
+              $local_sources[] = 'url("' . esc_url($final_url) . '") format("' . esc_attr($format) . '")';
+            }
+
+            if ($srcs_found && $local_sources) {
+              // Replace the whole src: line(s) in the block with the local_sources
+              $block = preg_replace(
+                '/src\s*:[^;]+;/is',
+                'src: ' . implode(',', $local_sources) . ';',
+                $block
+              );
+            }
+          }
+          return $block;
+        },
+        $css
+      );
+
+      return $start . $css . $end;
+    },
+    $buffer
+  );
+
+
+  return $buffer;
 }
 
 
@@ -674,6 +703,69 @@ function mbn_oxygen_cleanup( $buffer ) {
   } else {
     // Fallback: append to end
     $buffer .= $mbn_comment;
+  }
+
+  return $buffer;
+}
+
+
+function mbn_oxygen_preload_font( $buffer ) {
+  // Only preload one font url per font-face family, and only from mbn-enhancer in uploads
+  $font_face_preloads = array();
+
+  // Get upload base URL directory for mbn-enhancer fonts
+  $upload_dir_info = wp_upload_dir();
+  $mbn_baseurl = trailingslashit($upload_dir_info['baseurl']) . 'mbn-enhancer/';
+
+  // Match all <style>...</style> tags
+  if (preg_match_all('#<style[^>]*>(.*?)</style>#is', $buffer, $style_blocks)) {
+    foreach ($style_blocks[1] as $css) {
+      // Match all @font-face blocks
+      if (preg_match_all('/@font-face\s*{.*?}/is', $css, $fontfaces)) {
+        foreach ($fontfaces[0] as $fontface) {
+          // Extract font-family
+          if (preg_match('/font-family\s*:\s*["\']?([^;"\'}]+)["\']?\s*;/i', $fontface, $family_match)) {
+            $family = trim($family_match[1]);
+            // Only take the first suitable woff2 url for this family if not already added
+            if (!isset($font_face_preloads[$family])) {
+              // Find src property
+              if (preg_match('/src\s*:\s*([^;}]+);/is', $fontface, $src_match)) {
+                $src_block = $src_match[1];
+                if (
+                  preg_match_all(
+                    '/url\((["\']?)([^)"\']+\.woff2(?:\?[^)"\']*)?)\1\)/i',
+                    $src_block,
+                    $urls
+                  )
+                ) {
+                  // Only select the first .woff2 url from mbn-enhancer upload dir
+                  foreach ($urls[2] as $url) {
+                    if (strpos($url, $mbn_baseurl) === 0) {
+                      $font_face_preloads[$family] = $url;
+                      break; // Only one per family
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // Build <link rel="preload" ...> tags for each family/url found (from mbn-enhancer only)
+  $preloads = '';
+  foreach ($font_face_preloads as $font_url) {
+    // Only add crossorigin for non-data URLs
+    $crossorigin = (stripos($font_url, 'data:') === 0) ? '' : ' crossorigin';
+    $preloads .= '<link rel="preload" as="font" href="' . esc_url($font_url) . '" type="font/woff2"' . $crossorigin . '>' . "\n";
+  }
+
+  // Insert preload links just after <head>
+  if ($preloads && preg_match('/<head[^>]*>/i', $buffer, $head_tag, PREG_OFFSET_CAPTURE)) {
+    $head_pos = $head_tag[0][1] + strlen($head_tag[0][0]);
+    $buffer = substr_replace($buffer, $preloads, $head_pos, 0);
   }
 
   return $buffer;
