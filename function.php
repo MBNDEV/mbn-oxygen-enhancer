@@ -27,6 +27,10 @@ add_action('wp_head', function() {
 }, 100);
 
 add_action('wp_enqueue_scripts', function() {
+  if( is_user_logged_in() ) {
+    return;
+  }
+
     // Enqueue lazysizes.min.js
     wp_enqueue_script(
         'mbn-lazysizes',
