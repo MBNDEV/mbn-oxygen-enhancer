@@ -4,7 +4,7 @@
 Plugin Name: MBN Oxygen Enhancer
 Plugin URI: https://github.com/MBNDEV/mbn-oxygen-enhancer
 Description: Enhances Oxygen Builder with performance optimizations and extra utilities.
-Version: 3.0.1
+Version: 4.0.0
 Author: My Biz Niche
 Author URI: https://www.mybizniche.com/
 License: GPL2
@@ -71,15 +71,11 @@ function mbn_oxygen_enhancer_end_output_buffering($buffer) {
   }
 
   $buffer = mbn_oxygen_enhancer_localize_third_party_fontstyles( $buffer);
-  $buffer = mbn_oxygen_enhancer_importcss_local( $buffer );
   $buffer = mbn_oxygen_critical_css_optimize( $buffer);
   $buffer = mbn_oxygen_enhancer_scripts_optimize( $buffer);
   $buffer = mbn_oxygen_videos_optimize( $buffer);
   $buffer = mbn_oxygen_images_optimize( $buffer);
-  $buffer = mbn_oxygen_preconnect_optimize( $buffer);
   $buffer = mbn_oxygen_jquery_defer_fix( $buffer);
-  $buffer = mbn_oxygen_local_font( $buffer );
-  $buffer = mbn_oxygen_preload_font( $buffer);
   $buffer = mbn_oxygen_cleanup( $buffer );
 
   return $buffer;
@@ -110,27 +106,42 @@ function mbn_oxygen_enhancer_localize_third_party_fontstyles($buffer) {
         wp_mkdir_p($upload_base_dir);
     }
 
+    // Track localized fonts for preloading (Step 7)
+    $font_preloads = array();
+
+    // Track processed URLs to prevent duplicates
+    $processed_urls = array();
+
+    // Track CSS links to insert into head
+    $css_links_to_insert = '';
+
     foreach ($matches[1] as $href) {
+        // Skip if we've already processed this URL
+        if (isset($processed_urls[$href])) {
+            continue;
+        }
+
         foreach ($third_party_css_patterns as $pattern) {
             if (preg_match($pattern, $href, $asset_match)) {
                 $css_url = $href;
                 $css_name = 'thirdparty-fontstyles-' . md5($css_url) . '.css';
                 $local_css_file = $upload_base_dir . $css_name;
+                $local_css_url = $upload_base_url . $css_name;
 
-                // Download and save if it does not exist (or is stale, optional)
-                if (!file_exists($local_css_file)) {
-                    $css_content = @file_get_contents($css_url);
-                    if ($css_content !== false) {
-                        @file_put_contents($local_css_file, $css_content);
-                    }
-                } else {
-                    $css_content = @file_get_contents($local_css_file);
-                }
+                // Mark this URL as processed
+                $processed_urls[$href] = true;
 
-                // Inline only if we have valid CSS content
+                // STEP 1: Get CSS content from use.typekit.net
+                $css_content = @file_get_contents($css_url);
+
                 if ($css_content !== false && strlen(trim($css_content)) > 0) {
-                    // Replace link with <style> in the HTML buffer
-                    // Ensure all @font-face in CSS set font-display: swap (add if not present)
+                    // Remove CSS comments
+                    $css_content = preg_replace('#/\*.*?\*/#s', '', $css_content);
+
+                    // Remove @import url(...) statements
+                    $css_content = preg_replace('/@import\s+url\([^)]+\)\s*;?/i', '', $css_content);
+
+                    // Ensure all @font-face in CSS set font-display: swap
                     $css_content = preg_replace_callback(
                         '/@font-face\s*{[^}]*}/is',
                         function($matches) {
@@ -147,70 +158,130 @@ function mbn_oxygen_enhancer_localize_third_party_fontstyles($buffer) {
                         $css_content
                     );
 
-                    $pattern_replace = '#<link\s+[^>]*href=[\'"]' . preg_quote($css_url, '#') . '[\'"][^>]*>#i';
-                    $style_tag = '<style id="mbn-o2-inline-' . md5($css_url) . '">' . $css_content . '</style>';
-                    $buffer = preg_replace($pattern_replace, $style_tag, $buffer, 1);
-                    $buffer = preg_replace($pattern_replace, '', $buffer);
+                    // STEPS 2 & 3: Localize fonts and replace font URLs in CSS
+                    $css_content = preg_replace_callback(
+                        '/@font-face\s*\{[^}]*\}/is',
+                        function($fontface_block_matches) use (&$upload_dir_info, $upload_base_dir, $upload_base_url, &$font_preloads) {
+                            $block = $fontface_block_matches[0];
+
+                            // Extract font-family for preload tracking
+                            $font_family = '';
+                            if (preg_match('/font-family\s*:\s*["\']?([^;"\'}]+)["\']?\s*;/i', $block, $family_match)) {
+                                $font_family = trim($family_match[1]);
+                            }
+
+                            // Find src: urls that are likely remote (http/https)
+                            if (preg_match_all('/url\([\'"]?(https?:\/\/[^\'"\)]+)[\'"]?\)\s*format\([\'"]?([a-z0-9]+)[\'"]?\)/i', $block, $url_matches, PREG_SET_ORDER)) {
+                                $local_sources = [];
+                                $srcs_found = false;
+
+                                foreach ($url_matches as $m) {
+                                    $srcs_found = true;
+                                    $remote_url = $m[1];
+                                    $format = strtolower($m[2]);
+
+                                    // Skip opentype fonts - we don't want them
+                                    if ($format === 'opentype' || $format === 'otf') {
+                                        continue;
+                                    }
+
+                                    // Use format from CSS @font-face declaration (not URL filename)
+                                    // Third-party fonts like Typekit don't include file extensions in URLs
+                                    $ext = ($format === 'woff2' || $format === 'woff' || $format === 'ttf') ? $format : 'woff2';
+                                    $basename = 'font-' . md5($remote_url) . "." . $ext;
+                                    $local_file_path = trailingslashit($upload_base_dir . 'fonts') . $basename;
+                                    $local_file_url  = trailingslashit($upload_base_url . 'fonts') . $basename;
+
+                                    // Create the fonts directory if needed
+                                    if (!file_exists(dirname($local_file_path))) {
+                                        wp_mkdir_p(dirname($local_file_path));
+                                    }
+
+                                    // STEP 2: Download font if not exists or empty
+                                    if (!file_exists($local_file_path) || filesize($local_file_path) === 0) {
+                                        $font_content = @file_get_contents($remote_url);
+                                        if ($font_content !== false) {
+                                            @file_put_contents($local_file_path, $font_content);
+                                        }
+                                    }
+
+                                    // STEP 3: Replace with local URL if successfully downloaded
+                                    if (file_exists($local_file_path) && filesize($local_file_path) > 0) {
+                                        $final_url = $local_file_url;
+
+                                        // Track woff2 fonts for preloading (Step 7)
+                                        if ($format === 'woff2' && $font_family && !isset($font_preloads[$font_family])) {
+                                            $font_preloads[$font_family] = $final_url;
+                                        }
+                                    } else {
+                                        $final_url = $remote_url;
+                                    }
+
+                                    $local_sources[] = 'url("' . esc_url($final_url) . '") format("' . esc_attr($format) . '")';
+                                }
+
+                                if ($srcs_found && $local_sources) {
+                                    // Replace the whole src: line(s) in the block with the local_sources
+                                    $block = preg_replace(
+                                        '/src\s*:[^;]+;/is',
+                                        'src: ' . implode(', ', $local_sources) . ';',
+                                        $block
+                                    );
+                                }
+                            }
+                            return $block;
+                        },
+                        $css_content
+                    );
+
+                    // STEP 4: Save modified CSS file locally
+                    @file_put_contents($local_css_file, $css_content);
+
+                    // STEP 5: Build deferred CSS link to insert into head
+                    $deferred_link = '<link rel="stylesheet" href="' . esc_attr($local_css_url) . '" media="print" onload="this.media=\'all\'">' . "\n";
+                    $deferred_link .= '<noscript><link rel="stylesheet" href="' . esc_attr($local_css_url) . '"></noscript>' . "\n";
+                    $css_links_to_insert .= $deferred_link;
+
+                    // STEP 6: Remove all Typekit CSS link tags from buffer
+                    $buffer = preg_replace_callback(
+                        '#<link\b[^>]*>#i',
+                        function($match) use ($css_url) {
+                            $link_tag = $match[0];
+                            // If this link contains the Typekit URL, remove it
+                            if (stripos($link_tag, $css_url) !== false) {
+                                return ''; // Remove the tag
+                            }
+                            return $link_tag; // Keep other links
+                        },
+                        $buffer
+                    );
                 }
+
                 // Once matched and processed, don't check further patterns for this href
                 break;
             }
         }
     }
 
-    return $buffer;
-}
+    // STEP 6: Insert CSS links into <head>
+    if (!empty($css_links_to_insert) && preg_match('/<head[^>]*>/i', $buffer, $head_tag, PREG_OFFSET_CAPTURE)) {
+        $head_pos = $head_tag[0][1] + strlen($head_tag[0][0]);
+        $buffer = substr_replace($buffer, $css_links_to_insert, $head_pos, 0);
+    }
 
+    // STEP 7: Preload localized fonts
+    if (!empty($font_preloads)) {
+        $preload_links = '';
+        foreach ($font_preloads as $font_url) {
+            $preload_links .= '<link rel="preload" as="font" href="' . esc_url($font_url) . '" type="font/woff2" crossorigin>' . "\n";
+        }
 
-function mbn_oxygen_enhancer_importcss_local($buffer) {
-    // Find all <style> tags with inline CSS that contain @import url(...)
-    $buffer = preg_replace_callback(
-        '#<style([^>]*)>(.*?)</style>#is',
-        function($matches) {
-            $style_attrs = $matches[1];
-            $style_content = $matches[2];
-
-            // Find all @import url(...) in this <style> block
-            if (preg_match_all('/@import\s+url\((["\']?)([^"\')]+)\1\)\s*;?/i', $style_content, $import_matches, PREG_SET_ORDER)) {
-                foreach ($import_matches as $import_match) {
-                    $import_url = $import_match[2];
-
-                    // Use the same upload logic as mbn_oxygen_enhancer_localize_third_party_fontstyles
-                    $upload_dir_info = wp_upload_dir();
-                    $upload_base_dir = trailingslashit($upload_dir_info['basedir']) . 'mbn-enhancer/';
-                    // Make sure the upload directory exists
-                    if (!file_exists($upload_base_dir)) {
-                      wp_mkdir_p($upload_base_dir);
-                    }
-
-                    $css_name = 'thirdparty-importcss-' . md5($import_url) . '.css';
-                    $local_css_file = $upload_base_dir . $css_name;
-
-                    // Download and save if it does not exist
-                    if (!file_exists($local_css_file)) {
-                        $remote_css = @file_get_contents($import_url);
-                        if ($remote_css !== false) {
-                            @file_put_contents($local_css_file, $remote_css);
-                        }
-                    } else {
-                        $remote_css = @file_get_contents($local_css_file);
-                    }
-
-                    // Remove the @import url(...) line from style content
-                    $style_content = str_replace($import_match[0], '', $style_content);
-
-                    // Prepend a CSS comment indicating origin, then the downloaded (local) CSS inlined
-                    if (!empty($remote_css) && strlen(trim($remote_css)) > 0) {
-                        $prepend = "/* Imported from $import_url */\n" . $remote_css . "\n";
-                        $style_content = $prepend . $style_content;
-                    }
-                }
-            }
-
-            return '<style' . $style_attrs . '>' . $style_content . '</style>';
-        },
-        $buffer
-    );
+        // Insert preload links just after <head>
+        if (preg_match('/<head[^>]*>/i', $buffer, $head_tag, PREG_OFFSET_CAPTURE)) {
+            $head_pos = $head_tag[0][1] + strlen($head_tag[0][0]);
+            $buffer = substr_replace($buffer, $preload_links, $head_pos, 0);
+        }
+    }
 
     return $buffer;
 }
@@ -352,63 +423,6 @@ function mbn_oxygen_jquery_defer_fix($buffer) {
   );
 
   return $buffer;
-}
-
-function mbn_oxygen_preconnect_optimize($buffer) {
-    // Preconnect all third party scripts, styles, or iframes
-
-    $third_party_hosts = array();
-
-    // Find all <script> tags with src
-    preg_match_all('#<script\s+[^>]*src=[\'"]([^\'"]+)[\'"][^>]*>#i', $buffer, $scripts);
-    // Find all <link rel=stylesheet> tags with href
-    preg_match_all('#<link\s+[^>]*href=[\'"]([^\'"]+)[\'"][^>]*>#i', $buffer, $styles);
-    // Find all <iframe> tags with src
-    preg_match_all('#<iframe\s+[^>]*src=[\'"]([^\'"]+)[\'"][^>]*>#i', $buffer, $iframes);
-
-    // Combine all found third-party URLs
-    $urls = array_merge(
-        !empty($scripts[1]) ? $scripts[1] : array(),
-        !empty($styles[1]) ? $styles[1] : array(),
-        !empty($iframes[1]) ? $iframes[1] : array()
-    );
-
-    foreach ($urls as $url) {
-        $url_parts = parse_url($url);
-        if (!empty($url_parts['host'])) {
-            // Ignore current domain and localhost
-            if (
-                strpos($url_parts['host'], $_SERVER['HTTP_HOST']) === false &&
-                strpos($url_parts['host'], 'localhost') === false
-            ) {
-                $scheme = !empty($url_parts['scheme']) ? $url_parts['scheme'] : 'https';
-                $host = $scheme . '://' . $url_parts['host'];
-                $third_party_hosts[$host] = true;
-            }
-        }
-    }
-
-    if (!empty($third_party_hosts)) {
-        // Build preconnect tags for all unique third-party hosts
-        $preconnect_tags = '';
-        foreach (array_keys($third_party_hosts) as $host) {
-            $preconnect_tags .= '<link rel="preconnect" href="' . esc_url($host) . '" crossorigin>' . "\n";
-        }
-
-        // Remove all <link rel="stylesheet" ...> tags (as per prompt)
-        $buffer = preg_replace('#<link\s+[^>]*rel=[\'"]stylesheet[\'"][^>]*>#i', '', $buffer);
-
-        // Insert preconnect tags right after <head> or before first element in <head>
-        if (preg_match('/<head[^>]*>/i', $buffer, $head_tag, PREG_OFFSET_CAPTURE)) {
-            $head_pos = $head_tag[0][1] + strlen($head_tag[0][0]);
-            $buffer = substr_replace($buffer, $preconnect_tags, $head_pos, 0);
-        } else {
-            // Fallback: prepend to buffer
-            $buffer = $preconnect_tags . $buffer;
-        }
-    }
-
-    return $buffer;
 }
 
 
@@ -599,88 +613,6 @@ function mbn_oxygen_images_optimize( $buffer) {
 }
 
 
-function mbn_oxygen_local_font( $buffer ) {
-  // Find all <style> tags (inline CSS blocks)
-  $buffer = preg_replace_callback(
-    '#(<style[^>]*>)(.*?)(</style>)#is',
-    function($matches) {
-      $start = $matches[1];
-      $css = $matches[2];
-      $end = $matches[3];
-
-      // For each @font-face block with use.typekit.net src, attempt to download font and rewrite src
-      $css = preg_replace_callback(
-        '/@font-face\s*\{.*?\}/is',
-        function($fontface_block_matches) use (&$upload_dir_info) {
-          $block = $fontface_block_matches[0];
-          // Find src: urls that point to use.typekit.net
-          if (preg_match_all('/url\([\'"]?(https:\/\/use\.typekit\.net\/[^\'"\)]+)[\'"]?\)\s*format\([\'"]?([a-z0-9]+)[\'"]?\)/i', $block, $url_matches, PREG_SET_ORDER)) {
-            $local_sources = [];
-            $srcs_found = false;
-            $upload_dir_info = wp_upload_dir();
-            $upload_base_dir = trailingslashit($upload_dir_info['basedir']) . 'mbn-enhancer/fonts/';
-            $upload_base_url = trailingslashit($upload_dir_info['baseurl']) . 'mbn-enhancer/fonts/';
-
-            if (!file_exists($upload_base_dir)) {
-              wp_mkdir_p($upload_base_dir);
-            }
-
-            foreach ($url_matches as $m) {
-              $srcs_found = true;
-              $remote_url = $m[1];
-              $format = $m[2];
-
-              // Generate local file name, keep extension if possible, fallback to .bin
-              $ext = pathinfo(parse_url($remote_url, PHP_URL_PATH), PATHINFO_EXTENSION);
-              if (!$ext) {
-                $ext = ($format === 'woff2' || $format === 'woff' || $format === 'otf' || $format === 'ttf') ? $format : 'bin';
-              }
-              $basename = 'typekit-' . md5($remote_url) . "." . $ext;
-              $local_file_path = $upload_base_dir . $basename;
-              $local_file_url = $upload_base_url . $basename;
-
-              // Download if not exists
-              if (!file_exists($local_file_path)) {
-                $font_content = @file_get_contents($remote_url);
-                if ($font_content !== false) {
-                  @file_put_contents($local_file_path, $font_content);
-                }
-              }
-
-              // If downloaded, replace url to local; else, fallback to remote
-              if (file_exists($local_file_path) && filesize($local_file_path) > 0) {
-                $final_url = $local_file_url;
-              } else {
-                $final_url = $remote_url;
-              }
-
-              $local_sources[] = 'url("' . esc_url($final_url) . '") format("' . esc_attr($format) . '")';
-            }
-
-            if ($srcs_found && $local_sources) {
-              // Replace the whole src: line(s) in the block with the local_sources
-              $block = preg_replace(
-                '/src\s*:[^;]+;/is',
-                'src: ' . implode(',', $local_sources) . ';',
-                $block
-              );
-            }
-          }
-          return $block;
-        },
-        $css
-      );
-
-      return $start . $css . $end;
-    },
-    $buffer
-  );
-
-
-  return $buffer;
-}
-
-
 function mbn_oxygen_cleanup( $buffer ) {
   // Remove CSS comments from all <style>...</style> tags (including inline in <head>)
   $buffer = preg_replace_callback(
@@ -709,64 +641,57 @@ function mbn_oxygen_cleanup( $buffer ) {
 }
 
 
-function mbn_oxygen_preload_font( $buffer ) {
-  // Only preload one font url per font-face family, and only from mbn-enhancer in uploads
-  $font_face_preloads = array();
 
-  // Get upload base URL directory for mbn-enhancer fonts
-  $upload_dir_info = wp_upload_dir();
-  $mbn_baseurl = trailingslashit($upload_dir_info['baseurl']) . 'mbn-enhancer/';
+// Add an admin bar option to clear mbn-enhancer cache files
 
-  // Match all <style>...</style> tags
-  if (preg_match_all('#<style[^>]*>(.*?)</style>#is', $buffer, $style_blocks)) {
-    foreach ($style_blocks[1] as $css) {
-      // Match all @font-face blocks
-      if (preg_match_all('/@font-face\s*{.*?}/is', $css, $fontfaces)) {
-        foreach ($fontfaces[0] as $fontface) {
-          // Extract font-family
-          if (preg_match('/font-family\s*:\s*["\']?([^;"\'}]+)["\']?\s*;/i', $fontface, $family_match)) {
-            $family = trim($family_match[1]);
-            // Only take the first suitable woff2 url for this family if not already added
-            if (!isset($font_face_preloads[$family])) {
-              // Find src property
-              if (preg_match('/src\s*:\s*([^;}]+);/is', $fontface, $src_match)) {
-                $src_block = $src_match[1];
-                if (
-                  preg_match_all(
-                    '/url\((["\']?)([^)"\']+\.woff2(?:\?[^)"\']*)?)\1\)/i',
-                    $src_block,
-                    $urls
-                  )
-                ) {
-                  // Only select the first .woff2 url from mbn-enhancer upload dir
-                  foreach ($urls[2] as $url) {
-                    if (strpos($url, $mbn_baseurl) === 0) {
-                      $font_face_preloads[$family] = $url;
-                      break; // Only one per family
-                    }
-                  }
-                }
-              }
-            }
-          }
-        }
-      }
+add_action('admin_bar_menu', function($wp_admin_bar) {
+    if (!current_user_can('manage_options')) {
+        return;
     }
-  }
+    $wp_admin_bar->add_node(array(
+        'id'    => 'mbn_enhancer_clear_cache',
+        'title' => 'Clear MBN Enhancer Files',
+        'href'  => wp_nonce_url(
+            add_query_arg('mbn_enhancer_clear_cache', '1', admin_url()),
+            'mbn_enhancer_clear_cache'
+        ),
+        'meta'  => array(
+            'title' => 'Clear mbn-enhancer asset files (CSS/JS fonts cache)'
+        ),
+    ));
+}, 99);
 
-  // Build <link rel="preload" ...> tags for each family/url found (from mbn-enhancer only)
-  $preloads = '';
-  foreach ($font_face_preloads as $font_url) {
-    // Only add crossorigin for non-data URLs
-    $crossorigin = (stripos($font_url, 'data:') === 0) ? '' : ' crossorigin';
-    $preloads .= '<link rel="preload" as="font" href="' . esc_url($font_url) . '" type="font/woff2"' . $crossorigin . '>' . "\n";
-  }
+add_action('admin_init', function() {
+    if (!current_user_can('manage_options')) {
+        return;
+    }
+    if (
+        isset($_GET['mbn_enhancer_clear_cache']) && $_GET['mbn_enhancer_clear_cache'] == '1'
+        && check_admin_referer('mbn_enhancer_clear_cache')
+    ) {
+        $upload_dir_info = wp_upload_dir();
+        $mbn_dir = trailingslashit($upload_dir_info['basedir']) . 'mbn-enhancer/';
 
-  // Insert preload links just after <head>
-  if ($preloads && preg_match('/<head[^>]*>/i', $buffer, $head_tag, PREG_OFFSET_CAPTURE)) {
-    $head_pos = $head_tag[0][1] + strlen($head_tag[0][0]);
-    $buffer = substr_replace($buffer, $preloads, $head_pos, 0);
-  }
+        // Recursively delete files in the mbn-enhancer dir
+        if (file_exists($mbn_dir)) {
+            $objects = new RecursiveIteratorIterator(
+                new RecursiveDirectoryIterator($mbn_dir, RecursiveDirectoryIterator::SKIP_DOTS),
+                RecursiveIteratorIterator::CHILD_FIRST
+            );
 
-  return $buffer;
-}
+            foreach ($objects as $fileinfo) {
+                if ($fileinfo->isFile() || $fileinfo->isLink()) {
+                    @unlink($fileinfo->getRealPath());
+                } elseif ($fileinfo->isDir()) {
+                    @rmdir($fileinfo->getRealPath());
+                }
+            }
+            // Optionally: leave the mbn-enhancer dir present, or remove it
+            // @rmdir($mbn_dir);
+        }
+
+        // Redirect to prevent resubmission
+        wp_safe_redirect(remove_query_arg(['mbn_enhancer_clear_cache', '_wpnonce']));
+        exit;
+    }
+});
