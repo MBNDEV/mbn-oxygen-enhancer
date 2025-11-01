@@ -78,6 +78,7 @@ function mbn_oxygen_enhancer_end_output_buffering($buffer) {
   $buffer = mbn_oxygen_images_optimize( $buffer);
   $buffer = mbn_oxygen_preload_font( $buffer);
   $buffer = mbn_oxygen_preconnect_optimize( $buffer);
+  $buffer = mbn_oxygen_jquery_defer_fix( $buffer);
   $buffer = mbn_oxygen_cleanup( $buffer );
 
   return $buffer;
@@ -224,6 +225,28 @@ function mbn_oxygen_enhancer_scripts_optimize( $buffer) {
     'AOS.init'
   );
 
+  // First, defer script tags with src that are not already deferred and not excluded
+  $buffer = preg_replace_callback(
+    '#<script\b([^>]*)\bsrc\s*=\s*["\']([^"\']+)["\']([^>]*)>(.*?)</script>#is',
+    function($matches) {
+      $attrs_before = $matches[1];
+      $src_url = $matches[2];
+      $attrs_after = $matches[3];
+      $script_content = $matches[4];
+
+      // Don't touch scripts that already have defer or async
+      if (preg_match('/\bdefer\b/i', $attrs_before . ' ' . $attrs_after) ||
+          preg_match('/\basync\b/i', $attrs_before . ' ' . $attrs_after)) {
+        return $matches[0];
+      }
+
+      // Add defer to <script ...>
+      $deferred_tag = '<script' . rtrim($attrs_before) . ' src="' . $src_url . '"' . $attrs_after . ' defer>' . $script_content . '</script>';
+      return $deferred_tag;
+    },
+    $buffer
+  );
+
   $buffer = preg_replace_callback(
     '#<script\b([^>]*)>(.*?)</script>#is',
     function($matches) use ($excluded_scripts) {
@@ -263,6 +286,66 @@ function mbn_oxygen_enhancer_scripts_optimize( $buffer) {
         // No type attr, add our type
         return '<script' . rtrim($attrs) . ' type="mbn-scripts-load">' . $content . '</script>';
       }
+    },
+    $buffer
+  );
+
+  return $buffer;
+}
+
+function mbn_oxygen_jquery_defer_fix($buffer) {
+  // Find all <script> tags with inline JS (type="text/javascript" or no type)
+  // 1. Save each inline script to a separate file under uploads/mbn-enhancer/inline-script-<hash>.js if not already exists.
+  // 2. Replace inline <script> with <script src="...uploaded file url..." defer></script>
+  // Blob scheme not used (WP needs real URLs for src).
+  $upload_dir_info = wp_upload_dir();
+  $upload_base_dir = trailingslashit($upload_dir_info['basedir']) . 'mbn-enhancer/';
+  $upload_base_url = trailingslashit($upload_dir_info['baseurl']) . 'mbn-enhancer/';
+
+  // Ensure upload dir exists.
+  if (!file_exists($upload_base_dir)) {
+      wp_mkdir_p($upload_base_dir);
+  }
+
+  $buffer = preg_replace_callback(
+    // Match <script> tags that don't have src (inline), with optional type="text/javascript" or no type.
+    '#<script\b([^>]*)>([\s\S]*?)<\/script>#i',
+    function($matches) use ($upload_base_dir, $upload_base_url) {
+      $attrs = $matches[1];
+      $code = trim($matches[2]);
+
+      // Only move inline scripts with either no type or type="text/javascript"
+      $type_match = [];
+      $has_type = preg_match('/\stype\s*=\s*[\'"]([^\'"]+)[\'"]/i', $attrs, $type_match);
+      $allow = false;
+      if (!$has_type) {
+        $allow = true;
+      } else {
+        $type_value = strtolower(trim($type_match[1]));
+        if ($type_value === 'text/javascript') {
+          $allow = true;
+        }
+      }
+      // If no inline JS, or not allowed type, leave unchanged
+      if (!$allow || strlen($code) < 1) {
+        return $matches[0];
+      }
+
+      // Hash for uniqueness
+      $hash = md5($code);
+      $script_filename = 'inline-script-' . $hash . '.js';
+      $script_filepath = $upload_base_dir . $script_filename;
+      $script_fileurl = $upload_base_url . $script_filename;
+
+      // Write file if not exists
+      if (!file_exists($script_filepath)) {
+        @file_put_contents($script_filepath, $code);
+      }
+
+      // Replace with external script, preserve any data- attrs
+      // Remove type attribute if there (for cleanliness)
+      $attrs = preg_replace('/\s*type\s*=\s*[\'"][^\'"]*[\'"]/', '', $attrs);
+      return '<script' . rtrim($attrs) . ' src="' . esc_url($script_fileurl) . '" defer></script>';
     },
     $buffer
   );
