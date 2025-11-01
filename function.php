@@ -4,7 +4,7 @@
 Plugin Name: MBN Oxygen Enhancer
 Plugin URI: https://github.com/MBNDEV/mbn-oxygen-enhancer
 Description: Enhances Oxygen Builder with performance optimizations and extra utilities.
-Version: 1.0.0
+Version: 2.0.0
 Author: My Biz Niche
 Author URI: https://www.mybizniche.com/
 License: GPL2
@@ -26,11 +26,34 @@ add_action('wp_head', function() {
   echo '<style id="mbn-oxygen-enhancer-inline-css">' . $css_content . '</style>';
 }, 100);
 
-add_action('wp_footer', function() {
-  $js_file = plugin_dir_path(__FILE__) . 'script.js';
-  $js_content = file_get_contents($js_file);
-  echo '<script id="mbn-oxygen-enhancer-inline-js">' . $js_content . '</script>';
-}, 100);
+add_action('wp_enqueue_scripts', function() {
+    // Enqueue lazysizes.min.js
+    wp_enqueue_script(
+        'mbn-lazysizes',
+        plugins_url('mbn-enhancer.lazysizes.min.js', __FILE__),
+        array(),
+        null,
+        true
+    );
+
+    // Enqueue optimizer.js
+    wp_enqueue_script(
+        'mbn-optimizer',
+        plugins_url('mbn-enhancer.lazyassets.min.js', __FILE__),
+        array('mbn-lazysizes'),
+        null,
+        true
+    );
+
+    // Enqueue video.js
+    wp_enqueue_script(
+        'mbn-video',
+        plugins_url('mbn-enhancer-video.min.js', __FILE__),
+        array(),
+        null,
+        true
+    );
+});
 
 
 add_action('template_redirect', function () {
@@ -45,14 +68,13 @@ function mbn_oxygen_enhancer_end_output_buffering($buffer) {
 
   $buffer = mbn_oxygen_enhancer_localize_third_party_fontstyles( $buffer);
   $buffer = mbn_oxygen_enhancer_importcss_local( $buffer );
-
   $buffer = mbn_oxygen_critical_css_optimize( $buffer);
-  $buffer = mbn_oxygen_analytics_optimize( $buffer);
-  $buffer = mbn_oxygen_preconnect_optimize( $buffer);
   $buffer = mbn_oxygen_enhancer_scripts_optimize( $buffer);
-
   $buffer = mbn_oxygen_videos_optimize( $buffer);
   $buffer = mbn_oxygen_images_optimize( $buffer);
+  $buffer = mbn_oxygen_preload_font( $buffer);
+  $buffer = mbn_oxygen_preconnect_optimize( $buffer);
+  $buffer = mbn_oxygen_cleanup( $buffer );
 
   return $buffer;
 }
@@ -189,72 +211,116 @@ function mbn_oxygen_enhancer_importcss_local($buffer) {
 
 
 function mbn_oxygen_enhancer_scripts_optimize( $buffer) {
-  
+  // Exclude lazysizes.min.js, lazyassets.js (src or inlined) from being changed
+  $excluded_scripts = array(
+    'mbn-enhancer.lazysizes.min.js',
+    'mbn-enhancer.lazyassets.min.js',
+    'aos.js',
+    'jquery.min.js',
+    'AOS.init'
+  );
+
+  $buffer = preg_replace_callback(
+    '#<script\b([^>]*)>(.*?)</script>#is',
+    function($matches) use ($excluded_scripts) {
+      $attrs = $matches[1];
+      $content = $matches[2];
+
+      // Check if any exclusion keyword (by filename) occurs in src attr or inlined JS content
+      foreach ($excluded_scripts as $excluded) {
+        // Check src attribute (must match filename as last component of src=)
+        if (preg_match('/\bsrc\s*=\s*(["\'])([^"\']+)\1/i', $attrs, $src_match)) {
+          $src_url = $src_match[2];
+          // parse_url to get the path, then basename
+          $src_path = parse_url($src_url, PHP_URL_PATH);
+          if ($src_path && basename($src_path) === $excluded) {
+            return $matches[0];
+          }
+        }
+        // Check inline content (substring case-insensitive)
+        if (stripos($content, $excluded) !== false) {
+          return $matches[0];
+        }
+      }
+
+      // If type attribute present
+      if (preg_match('/\stype\s*=\s*[\'"]([^\'"]+)[\'"]/i', $attrs, $type_match)) {
+        $type_value = trim(strtolower($type_match[1]));
+        if ($type_value === 'text/javascript') {
+          // Remove existing type attribute
+          $attrs = preg_replace('/\s*type\s*=\s*[\'"][^\'"]*[\'"]/', '', $attrs);
+          // Add our new type
+          return '<script' . rtrim($attrs) . ' type="mbn-scripts-load">' . $content . '</script>';
+        } else {
+          // Don't modify
+          return $matches[0];
+        }
+      } else {
+        // No type attr, add our type
+        return '<script' . rtrim($attrs) . ' type="mbn-scripts-load">' . $content . '</script>';
+      }
+    },
+    $buffer
+  );
+
   return $buffer;
 }
 
-function mbn_oxygen_preconnect_optimize( $buffer) {
-  // Preconnect all third party scripts, styles, or iframes
+function mbn_oxygen_preconnect_optimize($buffer) {
+    // Preconnect all third party scripts, styles, or iframes
 
-  $third_party_hosts = array();
+    $third_party_hosts = array();
 
-  // Find all <script> tags with src
-  preg_match_all('#<script\s+[^>]*src=[\'"]([^\'"]+)[\'"][^>]*>#i', $buffer, $scripts);
-  // Find all <link rel=stylesheet> tags with href
-  preg_match_all('#<link\s+[^>]*rel=[\'"]stylesheet[\'"][^>]*href=[\'"]([^\'"]+)[\'"][^>]*>#i', $buffer, $styles);
-  // Find all <iframe> tags with src
-  preg_match_all('#<iframe\s+[^>]*src=[\'"]([^\'"]+)[\'"][^>]*>#i', $buffer, $iframes);
+    // Find all <script> tags with src
+    preg_match_all('#<script\s+[^>]*src=[\'"]([^\'"]+)[\'"][^>]*>#i', $buffer, $scripts);
+    // Find all <link rel=stylesheet> tags with href
+    preg_match_all('#<link\s+[^>]*href=[\'"]([^\'"]+)[\'"][^>]*>#i', $buffer, $styles);
+    // Find all <iframe> tags with src
+    preg_match_all('#<iframe\s+[^>]*src=[\'"]([^\'"]+)[\'"][^>]*>#i', $buffer, $iframes);
 
-  // Combine all found third-party URLs
-  $urls = array_merge(
-    !empty($scripts[1]) ? $scripts[1] : array(),
-    !empty($styles[1]) ? $styles[1] : array(),
-    !empty($iframes[1]) ? $iframes[1] : array()
-  );
+    // Combine all found third-party URLs
+    $urls = array_merge(
+        !empty($scripts[1]) ? $scripts[1] : array(),
+        !empty($styles[1]) ? $styles[1] : array(),
+        !empty($iframes[1]) ? $iframes[1] : array()
+    );
 
-  foreach ($urls as $url) {
-    $url_parts = parse_url($url);
-
-    if (!empty($url_parts['host'])) {
-      // Ignore current domain and localhost
-      if (
-        strpos($url_parts['host'], $_SERVER['HTTP_HOST']) === false &&
-        strpos($url_parts['host'], 'localhost') === false
-      ) {
-        $scheme = !empty($url_parts['scheme']) ? $url_parts['scheme'] : 'https';
-        $host = $scheme . '://' . $url_parts['host'];
-        $third_party_hosts[$host] = true;
-      }
-    }
-  }
-
-  if (!empty($third_party_hosts)) {
-    // Build preconnect tags for all unique third-party hosts
-    $preconnect_tags = '';
-    foreach (array_keys($third_party_hosts) as $host) {
-      $preconnect_tags .= '<link rel="preconnect" href="' . esc_url($host) . '" crossorigin>' . "\n";
+    foreach ($urls as $url) {
+        $url_parts = parse_url($url);
+        if (!empty($url_parts['host'])) {
+            // Ignore current domain and localhost
+            if (
+                strpos($url_parts['host'], $_SERVER['HTTP_HOST']) === false &&
+                strpos($url_parts['host'], 'localhost') === false
+            ) {
+                $scheme = !empty($url_parts['scheme']) ? $url_parts['scheme'] : 'https';
+                $host = $scheme . '://' . $url_parts['host'];
+                $third_party_hosts[$host] = true;
+            }
+        }
     }
 
-    // Insert before first <script>, <link rel="stylesheet">, <iframe>, or before </head> as fallback
-    $inserted = false;
-    foreach (array(
-      '/(<script\s)/i',
-      '/(<link\s+[^>]*rel=[\'"]stylesheet[\'"][^>]*>)/i',
-      '/(<iframe\s)/i'
-    ) as $pattern) {
-      $buffer = preg_replace($pattern, $preconnect_tags . '$1', $buffer, 1, $count);
-      if ($count > 0) {
-        $inserted = true;
-        break;
-      }
-    }
-    if (!$inserted) {
-      // fallback: just before </head>
-      $buffer = preg_replace('/(<\/head>)/i', $preconnect_tags . '$1', $buffer, 1);
-    }
-  }
+    if (!empty($third_party_hosts)) {
+        // Build preconnect tags for all unique third-party hosts
+        $preconnect_tags = '';
+        foreach (array_keys($third_party_hosts) as $host) {
+            $preconnect_tags .= '<link rel="preconnect" href="' . esc_url($host) . '" crossorigin>' . "\n";
+        }
 
-  return $buffer;
+        // Remove all <link rel="stylesheet" ...> tags (as per prompt)
+        $buffer = preg_replace('#<link\s+[^>]*rel=[\'"]stylesheet[\'"][^>]*>#i', '', $buffer);
+
+        // Insert preconnect tags right after <head> or before first element in <head>
+        if (preg_match('/<head[^>]*>/i', $buffer, $head_tag, PREG_OFFSET_CAPTURE)) {
+            $head_pos = $head_tag[0][1] + strlen($head_tag[0][0]);
+            $buffer = substr_replace($buffer, $preconnect_tags, $head_pos, 0);
+        } else {
+            // Fallback: prepend to buffer
+            $buffer = $preconnect_tags . $buffer;
+        }
+    }
+
+    return $buffer;
 }
 
 
@@ -263,7 +329,7 @@ function mbn_oxygen_critical_css_optimize( $buffer) {
   $css_file_patterns = array(
     '/\/oxygen\/css\/.*\.css/i',
     '/\/automatic-css\/.*\.css/i',
-    '/oxygen\.min\.css/i'
+    '/oxygen\.min\.css/i',
   );
 
   // Match <link> tags pointing to the CSS files we want
@@ -309,13 +375,35 @@ function mbn_oxygen_critical_css_optimize( $buffer) {
 function mbn_oxygen_videos_optimize( $buffer) {
   // Add preload="none" to all <video> tags that don't already have a preload attribute
   $buffer = preg_replace_callback(
-    '/<video\b([^>]*)>/i',
+    '/<video\b([^>]*)>(.*?)<\/video>/is',
     function ($matches) {
-      if (preg_match('/\bpreload\s*=\s*/i', $matches[1])) {
-        return $matches[0];
+      $attrs = $matches[1];
+      $inner = $matches[2];
+
+      // Move src attribute to data-src in <video> tag
+      if (preg_match('/\bsrc\s*=\s*([\'"])([^\'"]+)\1/i', $attrs, $src_match)) {
+        $attrs = preg_replace('/\bsrc\s*=\s*([\'"])[^\'"]+\1/i', '', $attrs);
+        $attrs = rtrim($attrs) . ' data-src=' . $src_match[1] . $src_match[2] . $src_match[1];
       }
-      $attrs = rtrim($matches[1]);
-      return '<video' . ($attrs ? $attrs . ' ' : ' ') . 'preload="none">';
+
+      // Add preload="none" only if not already present
+      if (preg_match('/\bpreload\s*=\s*/i', $attrs)) {
+        $preload_none = '';
+      } else {
+        $preload_none = ' preload="none"';
+      }
+
+      // Replace src with data-src in <source> tags within the video
+      $inner = preg_replace_callback('/<source\b([^>]*)>/i', function($source_matches) {
+        $source_attrs = $source_matches[1];
+        if (preg_match('/\bsrc\s*=\s*([\'"])([^\'"]+)\1/i', $source_attrs, $src_match)) {
+          $source_attrs = preg_replace('/\bsrc\s*=\s*([\'"])[^\'"]+\1/i', '', $source_attrs);
+          $source_attrs = rtrim($source_attrs) . ' data-src=' . $src_match[1] . $src_match[2] . $src_match[1];
+        }
+        return '<source' . ($source_attrs ? ' ' . trim($source_attrs) : '') . '>';
+      }, $inner);
+
+      return '<video' . ($attrs ? ' ' . trim($attrs) : '') . $preload_none . '>' . $inner . '</video>';
     },
     $buffer
   );
@@ -383,7 +471,34 @@ function mbn_oxygen_images_optimize( $buffer) {
       if ($img_count <= 10) {
         $attrs .= ' loading="eager"';
       } else {
-        $attrs .= ' loading="lazy"';
+        // Replace src with a placeholder 1x1 gif, move original to data-src.
+        if ($src) {
+          // Remove existing src attribute
+          $attrs = preg_replace('/\s*src\s*=\s*[\'"][^\'"]*[\'"]/', '', $attrs);
+          // Add placeholder src and data-src
+          $attrs .= ' src="data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==" data-src="' . esc_attr($src) . '"';
+        }
+        // Move srcset to data-srcset if exists
+        if (preg_match('/\bsrcset\s*=\s*[\'"]([^\'"]+)[\'"]/i', $attrs, $srcset_match)) {
+          $attrs = preg_replace('/\s*srcset\s*=\s*[\'"][^\'"]*[\'"]/', '', $attrs);
+          $attrs .= ' data-srcset="' . esc_attr($srcset_match[1]) . '"';
+        }
+        // Move sizes to data-sizes if exists
+        if (preg_match('/\bsizes\s*=\s*[\'"]([^\'"]+)[\'"]/i', $attrs, $sizes_match)) {
+          $attrs = preg_replace('/\s*sizes\s*=\s*[\'"][^\'"]*[\'"]/', '', $attrs);
+          $attrs .= ' data-sizes="' . esc_attr($sizes_match[1]) . '"';
+        }
+        // Add class lazyload (merge with existing class if any)
+        if (preg_match('/\bclass\s*=\s*[\'"]([^\'"]*)[\'"]/i', $attrs, $class_match)) {
+          $existing_class = $class_match[1];
+          // Update class attr to add lazyload if not present
+          if (strpos($existing_class, 'lazyload') === false) {
+            $new_class_val = trim($existing_class . ' lazyload');
+            $attrs = preg_replace('/\bclass\s*=\s*[\'"][^\'"]*[\'"]/', ' class="' . esc_attr($new_class_val) . '"', $attrs);
+          }
+        } else {
+          $attrs .= ' class="lazyload"';
+        }
       }
       $img_tag = '<img' . $attrs . '>';
 
@@ -396,47 +511,83 @@ function mbn_oxygen_images_optimize( $buffer) {
 }
 
 
-function mbn_oxygen_analytics_optimize( $buffer) {
 
-  $patterns = array(
-    'gtag', 
-    'googletagmanager', 
-    'gtm.js', 
-    'fbevents.js'
-  );
+function mbn_oxygen_preload_font($buffer) {
+    // Only preload font URLs if they are from Typekit (use.typekit.net)
+    $preload_fonts = array(); // [font-family or null] => font-url
 
+    // Find all @font-face blocks
+    if (preg_match_all('/@font-face\s*\{.*?\}/is', $buffer, $font_face_blocks)) {
+        foreach ($font_face_blocks[0] as $block) {
+            // Extract font-family (if any)
+            $font_family = null;
+            if (preg_match('/font-family\s*:\s*["\']?([^;"\'}]+)["\']?\s*;/i', $block, $family_match)) {
+                $font_family = trim($family_match[1]);
+            }
+            // Extract all url(...) from src (do not filter on extension, but skip data: urls)
+            if (preg_match_all('/url\(\s*[\'"]?([^\'")]+)[\'"]?\s*\)/i', $block, $url_matches)) {
+                foreach ($url_matches[1] as $font_url) {
+                    if (stripos($font_url, 'data:') === 0) continue;
+                    // Only include if it's a Typekit URL
+                    if (preg_match('~^https?://use\.typekit\.net/~', $font_url)) {
+                        // Only add first font URL if we found family, otherwise add all unique
+                        if ($font_family) {
+                            if (!isset($preload_fonts[$font_family])) {
+                                $preload_fonts[$font_family] = $font_url;
+                                break; // only first for the family
+                            }
+                        } else {
+                            // fallback for unknown family: just use URL itself (preload unique URLs)
+                            $preload_fonts[$font_url] = $font_url;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if (!empty($preload_fonts) && preg_match('/<head[^>]*>/i', $buffer, $head_tag, PREG_OFFSET_CAPTURE)) {
+        $inserts = '';
+        foreach ($preload_fonts as $font_url) {
+            // Type guessing: get extension for type (basic)
+            $type = '';
+            if (preg_match('/\.(woff2?)($|\?)/i', $font_url, $type_match)) {
+                $type = strtolower($type_match[1]);
+            }
+            $type_attr = $type ? ' type="font/' . esc_attr($type) . '"' : '';
+            $inserts .= '<link rel="preload" as="font" href="' . esc_attr($font_url) . '"' . $type_attr . ' crossorigin />' . "\n";
+        }
+        $head_pos = $head_tag[0][1] + strlen($head_tag[0][0]);
+        $buffer = substr_replace($buffer, $inserts, $head_pos, 0);
+    }
+
+    return $buffer;
+}
+
+
+function mbn_oxygen_cleanup( $buffer ) {
+  // Remove CSS comments from all <style>...</style> tags (including inline in <head>)
   $buffer = preg_replace_callback(
-    '#<script\b([^>]*)>(.*?)</script>#is',
-    function($matches) use ($patterns) {
-      $attrs = $matches[1];
-      $content = $matches[2];
-
-      // Check for match in src attribute or inline content
-      $found = false;
-      foreach ($patterns as $keyword) {
-        // Check src attribute
-        if (preg_match('/src\s*=\s*[\'"][^\'"]*' . preg_quote($keyword, '/') . '[^\'"]*[\'"]/i', $attrs)) {
-          $found = true;
-          break;
-        }
-        // Check inline JS content
-        if (preg_match('/' . preg_quote($keyword, '/') . '/i', $content)) {
-          $found = true;
-          break;
-        }
-      }
-      if (!$found) {
-        return $matches[0];
-      }
-
-      // Remove any type attribute
-      $attrs = preg_replace('/\s*type=[\'"][^\'"]*[\'"]/', '', $attrs);
-      // Rebuild with type="mbn-scripts-load"
-      $new_tag = '<script' . rtrim($attrs) . ' type="mbn-scripts-load">' . $content . '</script>';
-      return $new_tag;
+    '#(<style[^>]*>)(.*?)(</style>)#is',
+    function($matches) {
+      $start = $matches[1];
+      $css = $matches[2];
+      $end = $matches[3];
+      // Remove CSS comments: /* ... */
+      $css = preg_replace('#/\*.*?\*/#s', '', $css);
+      return $start . $css . $end;
     },
     $buffer
   );
+
+  // Insert comment <!-- MBN Performance Optimized Buffer --> before </body>
+  $mbn_comment = "\n<!-- MBN Performance Optimized Buffer -->\n";
+  if (stripos($buffer, '</body>') !== false) {
+    $buffer = preg_replace('/(<\/body>)/i', $mbn_comment . '$1', $buffer, 1);
+  } else {
+    // Fallback: append to end
+    $buffer .= $mbn_comment;
+  }
 
   return $buffer;
 }

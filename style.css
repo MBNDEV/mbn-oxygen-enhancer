@@ -1,3 +1,7 @@
 .ct-image {
   height: auto;
 }
+
+html, body {
+  overflow-x: hidden;
+}
