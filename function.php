@@ -4,7 +4,7 @@
 Plugin Name: MBN Oxygen Enhancer
 Plugin URI: https://github.com/MBNDEV/mbn-oxygen-enhancer
 Description: Enhances Oxygen Builder with performance optimizations and extra utilities.
-Version: 4.0.8
+Version: 4.0.9
 Author: My Biz Niche
 Author URI: https://www.mybizniche.com/
 License: GPL2
@@ -73,6 +73,7 @@ function mbn_oxygen_enhancer_end_output_buffering($buffer) {
   $buffer = mbn_oxygen_enhancer_localize_third_party_fontstyles( $buffer);
   $buffer = mbn_oxygen_enhancer_scripts_optimize( $buffer);
   $buffer = mbn_oxygen_videos_optimize( $buffer);
+  $buffer = mbn_oxygen_skip_lazy_load( $buffer);
   $buffer = mbn_oxygen_images_optimize( $buffer);
   $buffer = mbn_oxygen_jquery_defer_fix( $buffer);
   $buffer = mbn_oxygen_cleanup( $buffer );
@@ -623,6 +624,50 @@ function mbn_oxygen_images_optimize( $buffer) {
   return $buffer;
 }
 
+
+function mbn_oxygen_skip_lazy_load( $buffer) {
+  // Add skip-lazy class to all <img> tags within sections/divs that have the skip-lazy class
+
+  // Find all <section> or <div> tags with skip-lazy class and process images within them
+  $buffer = preg_replace_callback(
+    '/<(section|div)\b([^>]*class\s*=\s*[\'"]([^\'"]*\bskip-lazy\b[^\'"]*)[\'"][^>]*)>(.*?)<\/\1>/is',
+    function($matches) {
+      $opening_tag = $matches[0]; // Full matched content including tags
+      $content = $matches[4]; // Inner content only
+
+      // Process all <img> tags within this section/div to add skip-lazy class
+      $modified_content = preg_replace_callback(
+        '/<img\b([^>]*)>/i',
+        function($img_matches) {
+          $img_attrs = $img_matches[1];
+
+          // Check if skip-lazy class already exists
+          if (preg_match('/\bclass\s*=\s*[\'"]([^\'"]*)[\'"]/i', $img_attrs, $class_match)) {
+            $existing_class = $class_match[1];
+
+            // If skip-lazy is not already in the class list, add it
+            if (strpos($existing_class, 'skip-lazy') === false) {
+              $new_class_val = trim($existing_class . ' skip-lazy');
+              $img_attrs = preg_replace('/\bclass\s*=\s*[\'"][^\'"]*[\'"]/', 'class="' . esc_attr($new_class_val) . '"', $img_attrs);
+            }
+          } else {
+            // No class attribute exists, add it with skip-lazy
+            $img_attrs .= ' class="skip-lazy"';
+          }
+
+          return '<img' . $img_attrs . '>';
+        },
+        $content
+      );
+
+      // Return by replacing only the content portion, preserving exact original tags
+      return str_replace($content, $modified_content, $opening_tag);
+    },
+    $buffer
+  );
+
+  return $buffer;
+}
 
 function mbn_oxygen_cleanup( $buffer ) {
   // Remove CSS comments from all <style>...</style> tags (including inline in <head>)
