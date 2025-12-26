@@ -1,0 +1,62 @@
+<?php
+// Video poster image using WordPress responsive image with filters applied
+$poster_attachment_id = 1030;
+$poster_attrs = array(
+  'class' => 'skip-lazy',
+  'id' => 'homehero_bg_video_poster',
+  'alt' => get_post_meta($poster_attachment_id, '_wp_attachment_image_alt', true) ?: 'Video poster'
+);
+// wp_get_attachment_image automatically applies WordPress image filters and generates responsive srcset
+$poster_image = wp_get_attachment_image($poster_attachment_id, 'full', false, $poster_attrs);
+echo $poster_image;
+?>
+<video id="homehero_bg_video" autoplay muted loop playsinline>
+  <!-- Low resolution for mobile 
+  <source src="/wp-content/uploads/2025/01/home-hero-bg-480p-optimized.mp4" type="video/mp4" media="(max-width: 768px)">
+  <source src="/wp-content/uploads/2025/02/home-hero-bg-480p-optimized.webm" type="video/webm" media="(max-width: 768px)">
+  -->
+  <!-- High resolution for larger screens 
+  <source src="/wp-content/uploads/2025/01/home-hero-bg-1080p-optimized.mp4" type="video/mp4" media="(min-width: 769px)">
+  <source src="/wp-content/uploads/2025/02/home-hero-bg-1080p-optimized.webm" type="video/webm" media="(min-width: 769px)">
+  -->
+  <source src="/wp-content/uploads/2025/01/home-hero-bg-1080p-optimized.mp4" type="video/mp4">
+  <source src="/wp-content/uploads/2025/02/home-hero-bg-1080p-optimized.webm" type="video/webm">
+</video>
+
+<div id="homehero_bg_video_overlay"></div>  
+<style>
+  #homehero_bg_video_poster {
+    min-width: 100%;
+    min-height: 100%;
+    width: auto;
+    height: auto;
+    top: 50%;
+    left: 50%;
+    position: absolute;
+    transform: translate(-50%, -50%);
+    object-fit: cover;
+    z-index: 0;
+  }
+  #homehero_bg_video {
+    min-width: 100%;
+    min-height: 100%;
+    width: auto;
+    height: auto;
+    top: 50%;
+    left: 50%;
+    position: absolute;
+    transform: translate(-50%, -50%);
+    z-index: 1;
+  }
+  #homehero_bg_video_overlay {
+    background: rgb(0,0,0);
+    background: linear-gradient(0deg, rgba(0,0,0,1) 0%, rgba(0,0,0,0) 100%);
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    z-index: 2;
+  }
+</style>
+
