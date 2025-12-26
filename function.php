@@ -4,7 +4,7 @@
 Plugin Name: MBN Oxygen Enhancer
 Plugin URI: https://github.com/MBNDEV/mbn-oxygen-enhancer
 Description: Enhances Oxygen Builder with performance optimizations and extra utilities.
-Version: 4.0.4
+Version: 4.0.5
 Author: My Biz Niche
 Author URI: https://www.mybizniche.com/
 License: GPL2
@@ -70,8 +70,8 @@ function mbn_oxygen_enhancer_end_output_buffering($buffer) {
     return $buffer;
   }
 
-  $buffer = mbn_oxygen_enhancer_localize_third_party_fontstyles( $buffer);
   $buffer = mbn_oxygen_critical_css_optimize( $buffer);
+  $buffer = mbn_oxygen_enhancer_localize_third_party_fontstyles( $buffer);
   $buffer = mbn_oxygen_enhancer_scripts_optimize( $buffer);
   $buffer = mbn_oxygen_videos_optimize( $buffer);
   $buffer = mbn_oxygen_images_optimize( $buffer);
@@ -238,7 +238,7 @@ function mbn_oxygen_enhancer_localize_third_party_fontstyles($buffer) {
                     @file_put_contents($local_css_file, $css_content);
 
                     // STEP 5: Build deferred CSS link to insert into head
-                    $deferred_link = '<link rel="stylesheet" href="' . esc_attr($local_css_url) . '" media="print" onload="this.media=\'all\'">' . "\n";
+                    $deferred_link = '<link rel="stylesheet" data-fontdelayed="true" data-href="' . esc_attr($local_css_url) . '" media="print" onload="this.media=\'all\'">' . "\n";
                     $deferred_link .= '<noscript><link rel="stylesheet" href="' . esc_attr($local_css_url) . '"></noscript>' . "\n";
                     $css_links_to_insert .= $deferred_link;
 
