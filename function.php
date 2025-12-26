@@ -4,7 +4,7 @@
 Plugin Name: MBN Oxygen Enhancer
 Plugin URI: https://github.com/MBNDEV/mbn-oxygen-enhancer
 Description: Enhances Oxygen Builder with performance optimizations and extra utilities.
-Version: 4.0.2
+Version: 4.0.3
 Author: My Biz Niche
 Author URI: https://www.mybizniche.com/
 License: GPL2
@@ -432,6 +432,7 @@ function mbn_oxygen_critical_css_optimize( $buffer) {
     '/\/oxygen\/css\/.*\.css/i',
     '/\/automatic-css\/.*\.css/i',
     '/oxygen\.min\.css/i',
+    '/oxygen\.css/i',
   );
 
   // Match <link> tags pointing to the CSS files we want
