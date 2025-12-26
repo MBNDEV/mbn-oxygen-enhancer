@@ -4,7 +4,7 @@
 Plugin Name: MBN Oxygen Enhancer
 Plugin URI: https://github.com/MBNDEV/mbn-oxygen-enhancer
 Description: Enhances Oxygen Builder with performance optimizations and extra utilities.
-Version: 4.0.6
+Version: 4.0.8
 Author: My Biz Niche
 Author URI: https://www.mybizniche.com/
 License: GPL2
@@ -568,11 +568,20 @@ function mbn_oxygen_images_optimize( $buffer) {
         }
       }
 
-      // Add loading attribute: eager for first 10, lazy after.
+      // Check if image has skip-lazy, no-lazyload, or no-lazy class
+      $force_eager = false;
+      if (preg_match('/\bclass\s*=\s*[\'"]([^\'"]*)[\'"]/i', $attrs, $class_match)) {
+        $existing_class = $class_match[1];
+        if (preg_match('/\b(skip-lazy|no-lazyload|no-lazy)\b/i', $existing_class)) {
+          $force_eager = true;
+        }
+      }
+
+      // Add loading attribute: eager for first 3, lazy after, or eager if forced
       // Always force replace or set the loading attribute
       // Remove any existing loading attribute
       $attrs = preg_replace('/\s*loading\s*=\s*[\'"][^\'"]*[\'"]/i', '', $attrs);
-      if ($img_count <= 3) {
+      if ($img_count <= 3 || $force_eager) {
         $attrs .= ' loading="eager"';
       } else {
         // Replace src with a placeholder 1x1 gif, move original to data-src.
