@@ -4,7 +4,7 @@
 Plugin Name: MBN Oxygen Enhancer
 Plugin URI: https://github.com/MBNDEV/mbn-oxygen-enhancer
 Description: Enhances Oxygen Builder with performance optimizations and extra utilities.
-Version: 4.0.0
+Version: 4.0.1
 Author: My Biz Niche
 Author URI: https://www.mybizniche.com/
 License: GPL2
@@ -238,9 +238,10 @@ function mbn_oxygen_enhancer_localize_third_party_fontstyles($buffer) {
                     @file_put_contents($local_css_file, $css_content);
 
                     // STEP 5: Build deferred CSS link to insert into head
-                    $deferred_link = '<link rel="stylesheet" href="' . esc_attr($local_css_url) . '" media="print" onload="this.media=\'all\'">' . "\n";
-                    $deferred_link .= '<noscript><link rel="stylesheet" href="' . esc_attr($local_css_url) . '"></noscript>' . "\n";
-                    $css_links_to_insert .= $deferred_link;
+                    // $deferred_link = '<link rel="stylesheet" href="' . esc_attr($local_css_url) . '" media="print" onload="this.media=\'all\'">' . "\n";
+                    // $deferred_link .= '<noscript><link rel="stylesheet" href="' . esc_attr($local_css_url) . '"></noscript>' . "\n";
+                    // $css_links_to_insert .= $deferred_link;
+                    $css_links_to_insert .= '<style id="mbn-o2-inline-' . md5($local_css_url) . '">' . $css_content . '</style>' . "\n";
 
                     // STEP 6: Remove all Typekit CSS link tags from buffer
                     $buffer = preg_replace_callback(
