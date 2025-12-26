@@ -4,7 +4,7 @@
 Plugin Name: MBN Oxygen Enhancer
 Plugin URI: https://github.com/MBNDEV/mbn-oxygen-enhancer
 Description: Enhances Oxygen Builder with performance optimizations and extra utilities.
-Version: 4.0.3
+Version: 4.0.4
 Author: My Biz Niche
 Author URI: https://www.mybizniche.com/
 License: GPL2
@@ -270,18 +270,18 @@ function mbn_oxygen_enhancer_localize_third_party_fontstyles($buffer) {
     }
 
     // STEP 7: Preload localized fonts
-    if (!empty($font_preloads)) {
-        $preload_links = '';
-        foreach ($font_preloads as $font_url) {
-            $preload_links .= '<link rel="preload" as="font" href="' . esc_url($font_url) . '" type="font/woff2" crossorigin>' . "\n";
-        }
+    // if (!empty($font_preloads)) {
+    //     $preload_links = '';
+    //     foreach ($font_preloads as $font_url) {
+    //         $preload_links .= '<link rel="preload" as="font" href="' . esc_url($font_url) . '" type="font/woff2" crossorigin>' . "\n";
+    //     }
 
-        // Insert preload links just after <head>
-        if (preg_match('/<head[^>]*>/i', $buffer, $head_tag, PREG_OFFSET_CAPTURE)) {
-            $head_pos = $head_tag[0][1] + strlen($head_tag[0][0]);
-            $buffer = substr_replace($buffer, $preload_links, $head_pos, 0);
-        }
-    }
+    //     // Insert preload links just after <head>
+    //     if (preg_match('/<head[^>]*>/i', $buffer, $head_tag, PREG_OFFSET_CAPTURE)) {
+    //         $head_pos = $head_tag[0][1] + strlen($head_tag[0][0]);
+    //         $buffer = substr_replace($buffer, $preload_links, $head_pos, 0);
+    //     }
+    // }
 
     return $buffer;
 }
