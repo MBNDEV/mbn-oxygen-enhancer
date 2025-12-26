@@ -4,7 +4,7 @@
 Plugin Name: MBN Oxygen Enhancer
 Plugin URI: https://github.com/MBNDEV/mbn-oxygen-enhancer
 Description: Enhances Oxygen Builder with performance optimizations and extra utilities.
-Version: 4.0.5
+Version: 4.0.6
 Author: My Biz Niche
 Author URI: https://www.mybizniche.com/
 License: GPL2
@@ -31,34 +31,33 @@ add_action('wp_enqueue_scripts', function() {
     return;
   }
 
-    // Enqueue lazysizes.min.js
-    wp_enqueue_script(
-        'mbn-lazysizes',
-        plugins_url('mbn-enhancer.lazysizes.min.js', __FILE__),
-        array(),
-        null,
-        true
-    );
+  // Enqueue lazysizes.min.js with defer
+  wp_enqueue_script(
+      'mbn-lazysizes',
+      plugins_url('mbn-enhancer.lazysizes.min.js', __FILE__),
+      array(),
+      null,
+      true
+  );
 
-    // Enqueue optimizer.js
-    wp_enqueue_script(
-        'mbn-optimizer',
-        plugins_url('mbn-enhancer.lazyassets.min.js', __FILE__),
-        array('mbn-lazysizes'),
-        null,
-        true
-    );
+  // Enqueue optimizer.js with defer
+  wp_enqueue_script(
+      'mbn-optimizer',
+      plugins_url('mbn-enhancer.lazyassets.min.js', __FILE__),
+      array('mbn-lazysizes'),
+      null,
+      true
+  );
 
-    // Enqueue video.js
-    wp_enqueue_script(
-        'mbn-video',
-        plugins_url('mbn-enhancer-video.min.js', __FILE__),
-        array(),
-        null,
-        true
-    );
-});
-
+  // Enqueue video.js with defer
+  wp_enqueue_script(
+      'mbn-video',
+      plugins_url('mbn-enhancer-video.min.js', __FILE__),
+      array(),
+      null,
+      true
+  );
+}, 100);
 
 add_action('template_redirect', function () {
   ob_start('mbn_oxygen_enhancer_end_output_buffering');
@@ -238,7 +237,7 @@ function mbn_oxygen_enhancer_localize_third_party_fontstyles($buffer) {
                     @file_put_contents($local_css_file, $css_content);
 
                     // STEP 5: Build deferred CSS link to insert into head
-                    $deferred_link = '<link rel="stylesheet" data-fontdelayed="true" data-href="' . esc_attr($local_css_url) . '" media="print" onload="this.media=\'all\'">' . "\n";
+                    $deferred_link = '<link rel="stylesheet" data-mbn-delayed="true" data-href="' . esc_attr($local_css_url) . '" media="print" onload="this.media=\'all\'">' . "\n";
                     $deferred_link .= '<noscript><link rel="stylesheet" href="' . esc_attr($local_css_url) . '"></noscript>' . "\n";
                     $css_links_to_insert .= $deferred_link;
 
@@ -467,7 +466,7 @@ function mbn_oxygen_critical_css_optimize( $buffer) {
   $buffer = preg_replace_callback($link_stylesheet_pattern, function($matches) {
     // The href can match either $matches[1] or $matches[2] depending on order in tag
     $href = !empty($matches[1]) ? $matches[1] : $matches[2];
-    $link_tag = '<link rel="stylesheet" href="' . esc_attr($href) . '" media="print" onload="this.media=\'all\'">';
+    $link_tag = '<link rel="stylesheet" data-mbn-delayed="true" data-href="' . esc_attr($href) . '" media="print" onload="this.media=\'all\'">';
     $noscript_tag = '<noscript><link rel="stylesheet" href="' . esc_attr($href) . '"></noscript>';
     return $link_tag . $noscript_tag;
   }, $buffer);
@@ -524,6 +523,8 @@ function mbn_oxygen_images_optimize( $buffer) {
       $img_count++;
 
       $attrs = $matches[1];
+      // Remove trailing slash and whitespace from self-closing tags
+      $attrs = rtrim($attrs, '/ ');
 
       // Check if width and height are present
       $has_width  = preg_match('/\bwidth\s*=\s*[\'"][^\'"]+[\'"]/i', $attrs);
@@ -571,7 +572,7 @@ function mbn_oxygen_images_optimize( $buffer) {
       // Always force replace or set the loading attribute
       // Remove any existing loading attribute
       $attrs = preg_replace('/\s*loading\s*=\s*[\'"][^\'"]*[\'"]/i', '', $attrs);
-      if ($img_count <= 10) {
+      if ($img_count <= 3) {
         $attrs .= ' loading="eager"';
       } else {
         // Replace src with a placeholder 1x1 gif, move original to data-src.
